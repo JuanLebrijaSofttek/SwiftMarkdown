@@ -57,6 +57,12 @@ Pass the same style you rendered with — segments carry their own fonts and
 colors, so a mismatch lays the text out in one style and decorates it in
 another.
 
+For a message with many code blocks — each is a view with its own text stack and
+runs its highlighter on creation — add `.lazySegments()` so they're built as they
+near the viewport rather than all at once. It's opt-in because a `LazyVStack`
+reports only the height of what it has built, which outside a vertical
+`ScrollView` is nothing.
+
 ## How the incremental path works
 
 Three layers, each able to resume from its own previous result:
@@ -83,6 +89,17 @@ split, no reuse machinery, for text that will never change again.
 document and segment set, feeding each back in. A style change bypasses the
 queue and renders immediately — a queued render would leave the document in
 stale colors for a frame.
+
+Drawing follows the same rule. `MarkdownDecoration` paints code panels, quote
+bars, rules and table frames under the glyphs, and a view is asked to draw once
+per tile as it scrolls — so each pass is scoped to the characters the dirty rect
+touches rather than the whole storage. On a 37K-character message that's 4.6ms
+per tile down to 0.013ms, and it no longer grows with the message. Decorations
+that start above the rect are still expanded to their full run before being
+drawn: clipping the range would round a panel's corners at the tile boundary and
+frame a table around whichever rows happened to be visible. `MarkdownTileDrawingTests`
+holds that line by drawing in bands and comparing to a single full draw, pixel
+for pixel.
 
 The parser is deliberately tolerant of half-finished input: an unterminated fence
 or a table mid-row parses as the block it is on its way to becoming, rather than

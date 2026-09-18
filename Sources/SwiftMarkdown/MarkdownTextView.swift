@@ -24,13 +24,45 @@ enum MarkdownDecoration {
     /// Draws the panels, bars and rules for `storage` into the current context.
     /// Written against TextKit 1 because `NSTextTable` — which GFM tables need on
     /// macOS — has no TextKit 2 equivalent.
+    ///
+    /// `dirtyRect` is the rect the view was asked to draw, in its own coordinates.
+    /// Passing it matters more than it looks: without it every one of these passes
+    /// enumerates the whole storage, and the view is asked to draw once per tile as it
+    /// scrolls, so the cost tracks the length of the message rather than what is on
+    /// screen. Pass `nil` to decorate everything.
     static func draw(storage: NSTextStorage,
                      layoutManager: NSLayoutManager,
                      container: NSTextContainer,
                      origin: CGPoint,
-                     style: MarkdownStyle) {
+                     style: MarkdownStyle,
+                     dirtyRect: CGRect?) {
         let full = NSRange(location: 0, length: storage.length)
         guard full.length > 0 else { return }
+
+        // Characters the dirty rect touches. `glyphRange(forBoundingRect:)` lays out
+        // what it needs and no more, which is the other half of the saving.
+        var scope = full
+        if let dirtyRect {
+            let glyphs = layoutManager.glyphRange(
+                forBoundingRect: dirtyRect.offsetBy(dx: -origin.x, dy: -origin.y),
+                in: container)
+            scope = layoutManager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+        }
+        guard scope.length > 0 else { return }
+
+        /// The whole run a decoration belongs to, given a piece of it inside `scope`.
+        ///
+        /// A code panel or a table that begins above the dirty rect still has to be
+        /// drawn as one shape — decorating only the intersection would round the
+        /// corners of a panel at the tile boundary and frame a table around whichever
+        /// rows happen to be visible. This costs the length of the one run it expands,
+        /// not the length of the document.
+        func whole(_ key: NSAttributedString.Key, from range: NSRange) -> NSRange {
+            var effective = NSRange()
+            _ = storage.attribute(key, at: range.location,
+                                  longestEffectiveRange: &effective, in: full)
+            return effective.length > 0 ? effective : range
+        }
 
         func box(_ range: NSRange) -> CGRect {
             let glyphs = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
@@ -38,24 +70,25 @@ enum MarkdownDecoration {
                 .offsetBy(dx: origin.x, dy: origin.y)
         }
 
-        storage.enumerateAttribute(MarkdownAttributedBuilder.codeBlockAttribute, in: full) { value, range, _ in
+        storage.enumerateAttribute(MarkdownAttributedBuilder.codeBlockAttribute, in: scope) { value, range, _ in
             guard value != nil else { return }
-            let rect = box(range).insetBy(dx: -4, dy: -6)
+            let rect = box(whole(MarkdownAttributedBuilder.codeBlockAttribute, from: range))
+                .insetBy(dx: -4, dy: -6)
             style.codeBackground.setFill()
             fill(roundedRect: rect, radius: codeCornerRadius)
         }
 
         if MarkdownAttributedBuilder.debugBlockBorders {
-            storage.enumerateAttribute(MarkdownAttributedBuilder.blockBoundaryAttribute, in: full) { value, range, _ in
+            storage.enumerateAttribute(MarkdownAttributedBuilder.blockBoundaryAttribute, in: scope) { value, range, _ in
                 guard value != nil else { return }
                 PlatformColor.systemBlue.setStroke()
                 stroke(roundedRect: box(range), radius: 0, lineWidth: 1)
             }
         }
 
-        storage.enumerateAttribute(MarkdownAttributedBuilder.quoteDepthAttribute, in: full) { value, range, _ in
+        storage.enumerateAttribute(MarkdownAttributedBuilder.quoteDepthAttribute, in: scope) { value, range, _ in
             guard let depth = value as? Int else { return }
-            let rect = box(range)
+            let rect = box(whole(MarkdownAttributedBuilder.quoteDepthAttribute, from: range))
             style.quoteBarColor.setFill()
             for level in 0..<depth {
                 let x = rect.minX + CGFloat(level) * 18 + 2
@@ -63,9 +96,9 @@ enum MarkdownDecoration {
             }
         }
 
-        storage.enumerateAttribute(MarkdownAttributedBuilder.thematicBreakAttribute, in: full) { value, range, _ in
+        storage.enumerateAttribute(MarkdownAttributedBuilder.thematicBreakAttribute, in: scope) { value, range, _ in
             guard value != nil else { return }
-            let rect = box(range)
+            let rect = box(whole(MarkdownAttributedBuilder.thematicBreakAttribute, from: range))
             // The divider colour is tuned for hairlines between chrome and disappears
             // against the message background; the rule reads as a break only in the
             // secondary text colour.
@@ -78,8 +111,9 @@ enum MarkdownDecoration {
         // each pair of rows. Only horizontal rules, no column
         // dividers: with columns sized to their content the vertical gaps are uneven,
         // and ruling them draws attention to that rather than to the data.
-        storage.enumerateAttribute(MarkdownAttributedBuilder.tableAttribute, in: full) { value, range, _ in
+        storage.enumerateAttribute(MarkdownAttributedBuilder.tableAttribute, in: scope) { value, partial, _ in
             guard value != nil else { return }
+            let range = whole(MarkdownAttributedBuilder.tableAttribute, from: partial)
 
             // Row boxes in document order. A row's glyph box is just its text, so the
             // padding around it is added back here — the two halves share
@@ -223,7 +257,7 @@ public final class MarkdownNSTextView: NSTextView {
         guard let style, let layoutManager, let textContainer, let textStorage else { return }
         MarkdownDecoration.draw(storage: textStorage, layoutManager: layoutManager,
                                 container: textContainer, origin: textContainerOrigin,
-                                style: style)
+                                style: style, dirtyRect: rect)
     }
 
     // Chat text is read-only, but it still has to take focus for selection to work.
@@ -323,7 +357,7 @@ public final class MarkdownUITextView: UITextView {
                                 container: container,
                                 origin: CGPoint(x: textContainerInset.left,
                                                 y: textContainerInset.top),
-                                style: style)
+                                style: style, dirtyRect: rect)
         super.draw(rect)
     }
 }

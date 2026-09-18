@@ -151,6 +151,9 @@ public struct MarkdownView: View {
 
     @State private var coordinator = MarkdownRenderCoordinator()
 
+    /// See ``lazySegments(_:)``. Off by default, and deliberately so.
+    private var isLazy = false
+
     /// Renders `text`, re-rendering as it changes. Use this for a message that is
     /// still arriving.
     public init(text: String, style: MarkdownStyle? = nil) {
@@ -188,20 +191,43 @@ public struct MarkdownView: View {
         customStyle ?? MarkdownStyle.standard(appearanceIsDark: colorScheme == .dark)
     }
 
+    /// Builds each segment's view only as it nears the viewport, rather than all of
+    /// them when the message appears.
+    ///
+    /// Worth it for a message with many code blocks — each is a view with its own text
+    /// stack, and each runs its highlighter on creation, so twenty realised in one
+    /// frame is a stall. Not the default, because a `LazyVStack` has no intrinsic
+    /// height: it reports what it has built so far, which outside a vertical
+    /// `ScrollView` is nothing. Turn it on only where this view sits inside one.
+    public func lazySegments(_ enabled: Bool = true) -> MarkdownView {
+        var copy = self
+        copy.isLazy = enabled
+        return copy
+    }
+
+    @ViewBuilder
+    private var segmentViews: some View {
+        ForEach(segments) { segment in
+            switch segment {
+            case .prose(_, let attributed):
+                MarkdownTextViewRepresentable(attributed: attributed, style: style)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+
+            case .code(_, let language, let code):
+                MarkdownCodeBlockViewHighlighted(language: language, code: code)
+
+            case .table(_, let table):
+                MarkdownTableView(table: table, style: style)
+            }
+        }
+    }
+
     public var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            ForEach(segments) { segment in
-                switch segment {
-                case .prose(_, let attributed):
-                    MarkdownTextViewRepresentable(attributed: attributed, style: style)
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
-
-                case .code(_, let language, let code):
-                    MarkdownCodeBlockViewHighlighted(language: language, code: code)
-
-                case .table(_, let table):
-                    MarkdownTableView(table: table, style: style)
-                }
+        Group {
+            if isLazy {
+                LazyVStack(alignment: .leading, spacing: 2) { segmentViews }
+            } else {
+                VStack(alignment: .leading, spacing: 2) { segmentViews }
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
