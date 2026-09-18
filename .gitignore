@@ -1,0 +1,13 @@
+.DS_Store
+/.build
+/Packages
+xcuserdata/
+DerivedData/
+.netrc
+.swiftpm/configuration/registries.json
+.swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
+
+# Local agent tooling state: machine-specific paths, runtime pids and a
+# regenerable code index. Nothing here is meaningful on another checkout.
+.claude/
+.tokensave/

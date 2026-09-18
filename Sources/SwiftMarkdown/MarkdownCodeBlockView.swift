@@ -1,0 +1,426 @@
+//
+//  MarkdownCodeBlockView.swift
+//  SwiftMarkdown
+//
+//  A code block with a header and horizontal scrolling.
+//
+//  This is the one place the unified-text-view approach is deliberately broken. Code
+//  cannot both scroll sideways and live in the message's single text storage: TextKit
+//  gives one container one width, so a non-wrapping paragraph either clips or forces the
+//  whole message to scroll. Scrolling wins here because wrapped code misleads — a wrapped
+//  line looks like a new statement, and indentation stops meaning anything.
+//
+//  The cost is that a drag-selection stops at a code block's edge. Prose on either side
+//  still selects continuously within its own run.
+//
+
+import SwiftUI
+#if canImport(AppKit)
+import AppKit
+#elseif canImport(UIKit)
+import UIKit
+#endif
+
+public struct MarkdownCodeBlockView: View {
+
+    public let language: String?
+    public let code: String
+
+    @State private var isExpanded = false
+    @State private var contentSize: CGSize = .zero
+
+    /// Rendered height of one line, used to cap a collapsed block.
+    @State private var lineHeight: CGFloat = 17
+
+    /// Gap between the code and the panel's top and bottom edges.
+    ///
+    /// One constant because four numbers had to agree: the text view's own
+    /// `textContainerInset`, and the doubled form of it in the panel's height and in the
+    /// text view's clamp. They were separately hardcoded to `8` and `16`, so the panel
+    /// held the code to the size the old inset implied and raising the padding around the
+    /// scroll view only grew the coloured box — the gap itself never moved.
+    static let verticalInset: CGFloat = 10
+
+    /// Gap between the panel and the prose above and below it.
+    ///
+    /// Deliberately more than ``MarkdownAttributedBuilder/blockSpacing``, which this used
+    /// to take: that number spaces blocks that share the message's background, where a
+    /// couple of points is enough to read as a break. A panel has its own fill and border,
+    /// so at the same 2pt it looked wedged between the surrounding paragraphs.
+    static let outerSpacing: CGFloat = 8
+
+    public init(language: String?, code: String) {
+        self.language = language
+        self.code = code
+    }
+
+    private var lineCount: Int { code.components(separatedBy: "\n").count }
+    private var isExpandable: Bool { lineCount > MarkdownAttributedBuilder.collapsedCodeLines }
+    private var isCollapsed: Bool { isExpandable && !isExpanded }
+
+    private var visibleHeight: CGFloat {
+        let full = max(contentSize.height, lineHeight)
+        guard isCollapsed else { return full }
+        // Half a line past the cut-off, so the fade has a genuinely partial line to act
+        // on. Stopping exactly on a line boundary would just dim a complete line and
+        // leave no hint that more follows.
+        return min(full, lineHeight * (CGFloat(MarkdownAttributedBuilder.collapsedCodeLines) + 0.5))
+    }
+
+    /// Height the block occupies on screen. Also caps the text view itself, so a
+    /// collapsed block has nothing hidden to scroll to.
+    private var frameHeight: CGFloat { max(visibleHeight, lineHeight) + Self.verticalInset * 2 }
+
+    private var fontSize: CGFloat { PlatformFont.markdownBodySize * 0.95 }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+            Divider().frame(height: 0.5).overlay(MarkdownColors.divider)
+            CodeScrollView(
+                code: code,
+                fontSize: fontSize,
+                textColor: PlatformColor.from(Color.primary),
+                maxHeight: frameHeight
+            )
+            .frame(height: frameHeight)
+            .clipped()
+            .overlay(alignment: .bottom) {
+                // Collapsing cuts the last visible line mid-glyph, which reads as a
+                // rendering fault. Fading it into the panel says "there is more" instead.
+                if isCollapsed {
+                    LinearGradient(
+                        colors: [MarkdownColors.codeBackground.opacity(0), MarkdownColors.codeBackground],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .frame(height: lineHeight * 1.6)
+                    // The fade is decoration; clicks and drags belong to the code under it.
+                    .allowsHitTesting(false)
+                }
+            }
+        }
+        .background(MarkdownColors.codeBackground)
+        // `CodeScrollView` is a native NSView/UIView, not a SwiftUI layer — without
+        // flattening the stack first, its corner can render past the mask below and
+        // survive as a stray square poking out of the rounded corner.
+        .compositingGroup()
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(MarkdownColors.divider, lineWidth: 0.5))
+        .padding(.vertical, Self.outerSpacing)
+        // Sized from the text alone, tied only to what could actually change it —
+        // never to the live view's own render cycle. `CodeScrollView` never wraps,
+        // so a window resize changes its available width but never its content
+        // height; measuring from `updateNSView` anyway (as this used to) fed a
+        // spurious remeasure through an async `@State` round trip on every resize
+        // tick, one frame behind the drag — the outer frame briefly committed at a
+        // stale height and the next message overlapped it.
+        .onAppear { measure() }
+        .onChange(of: code) { _, _ in measure() }
+    }
+
+    private func measure() {
+        (contentSize, lineHeight) = CodeScrollView.measure(code: code, fontSize: fontSize)
+    }
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Text((language?.isEmpty == false ? language! : "code").uppercased())
+                .font(.caption2.weight(.medium))
+                .foregroundColor(Color.secondary)
+
+            Spacer(minLength: 4)
+
+            if isExpandable {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) { isExpanded.toggle() }
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: isCollapsed ? "chevron.down" : "chevron.up")
+                        Text(isCollapsed ? "Expand \(lineCount) lines" : "Collapse")
+                    }
+                    .font(.caption2)
+                    .foregroundColor(Color.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+
+            CodeCopyButton(code: code)
+        }
+        .padding(.leading, 12)
+        .padding(.trailing, 8)
+        .frame(height: 30)
+        .background(MarkdownColors.codeHeader)
+    }
+}
+
+// MARK: - Copy
+
+private struct CodeCopyButton: View {
+
+    let code: String
+
+    @State private var isCopied = false
+
+    var body: some View {
+        Button {
+            copy(code)
+            isCopied = true
+            // Copy always takes the whole block, collapsed or not.
+            Task {
+                try? await Task.sleep(for: .milliseconds(1500))
+                isCopied = false
+            }
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
+                Text(isCopied ? "Copied" : "Copy")
+            }
+            .font(.caption2)
+            .foregroundColor(Color.secondary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Color.primary.opacity(0.1))
+            .cornerRadius(4)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func copy(_ text: String) {
+        #if canImport(AppKit)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        #else
+        UIPasteboard.general.string = text
+        #endif
+    }
+}
+
+// MARK: - Scrolling text
+
+/// A non-wrapping, horizontally scrollable text view. Selectable within itself.
+private struct CodeScrollView {
+    let code: String
+    let fontSize: CGFloat
+    let textColor: PlatformColor
+    /// Ceiling for the document height. Collapsed blocks pass a short value so the
+    /// hidden lines are never laid out into scrollable space — the block cuts off
+    /// instead of turning into a vertical scroller.
+    let maxHeight: CGFloat
+
+    /// TextKit 1 ownership runs storage -> layout manager -> container, and the
+    /// back-references are weak. The text view here is a stock one with nowhere to
+    /// hang the stack, so the coordinator holds it for the lifetime of the view.
+    final class TextKitStack {
+        var storage: NSTextStorage?
+        var layoutManager: NSLayoutManager?
+    }
+
+    func makeCoordinator() -> TextKitStack { TextKitStack() }
+
+    /// The attributed form and its measured size. Shared so both platform bridges
+    /// lay the code out identically.
+    func attributed() -> (NSAttributedString, NSParagraphStyle) {
+        let font = PlatformFont.markdownMono(size: fontSize)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = 2
+        // The whole point of this view: never wrap.
+        paragraph.lineBreakMode = .byClipping
+
+        return (NSAttributedString(string: code, attributes: [
+            .font: font,
+            .foregroundColor: textColor,
+            .paragraphStyle: paragraph,
+        ]), paragraph)
+    }
+
+    /// An "unbounded" container. `greatestFiniteMagnitude` overflows TextKit's own
+    /// arithmetic on UIKit and lays out nothing past the first fragment, so the bound is
+    /// large but finite — no code block is a million points wide.
+    static let unbounded = CGSize(width: 1_000_000, height: 1_000_000)
+
+    func measure(layoutManager: NSLayoutManager,
+                 container: NSTextContainer,
+                 paragraph: NSParagraphStyle) -> (CGSize, CGFloat) {
+        layoutManager.ensureLayout(for: container)
+        let used = layoutManager.usedRect(for: container)
+        let size = CGSize(width: ceil(used.width), height: ceil(used.height))
+        let font = PlatformFont.markdownMono(size: fontSize)
+        #if canImport(AppKit)
+        let lineHeight = layoutManager.defaultLineHeight(for: font)
+        #else
+        // UIKit's layout manager has no `defaultLineHeight`; the font's own metrics
+        // are what it would compute anyway.
+        let lineHeight = font.lineHeight
+        #endif
+        return (size, lineHeight + paragraph.lineSpacing)
+    }
+
+    /// A throwaway TextKit stack just to measure — used by `MarkdownCodeBlockView`
+    /// to size itself from `code` alone, independent of any live NSView/UIView and
+    /// its own render cycle. See the call site for why that independence matters.
+    static func measure(code: String, fontSize: CGFloat) -> (size: CGSize, lineHeight: CGFloat) {
+        let view = CodeScrollView(code: code, fontSize: fontSize,
+                                  textColor: .clear, maxHeight: 0)
+        let (string, paragraph) = view.attributed()
+
+        let storage = NSTextStorage(attributedString: string)
+        let layoutManager = NSLayoutManager()
+        let container = NSTextContainer(size: unbounded)
+        container.widthTracksTextView = false
+        container.lineFragmentPadding = 0
+        layoutManager.addTextContainer(container)
+        storage.addLayoutManager(layoutManager)
+
+        let (size, lineHeight) = view.measure(layoutManager: layoutManager, container: container,
+                                              paragraph: paragraph)
+        return (size, lineHeight)
+    }
+}
+
+#if canImport(AppKit)
+
+/// Clamping the document height is not enough on AppKit: the text view resizes itself
+/// during layout and the scroll view will happily scroll anything taller than the clip.
+/// These two pin the vertical axis outright — the wheel's vertical component goes to the
+/// transcript underneath, where the reader expects it.
+private final class HorizontalOnlyScrollView: NSScrollView {
+    override func scrollWheel(with event: NSEvent) {
+        if abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) {
+            super.scrollWheel(with: event)
+        } else {
+            nextResponder?.scrollWheel(with: event)
+        }
+    }
+}
+
+private final class TopPinnedClipView: NSClipView {
+    override func constrainBoundsRect(_ proposedBounds: NSRect) -> NSRect {
+        var rect = super.constrainBoundsRect(proposedBounds)
+        rect.origin.y = 0
+        return rect
+    }
+}
+
+extension CodeScrollView: NSViewRepresentable {
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = HorizontalOnlyScrollView()
+        scrollView.contentView = TopPinnedClipView()
+        scrollView.hasHorizontalScroller = true
+        scrollView.hasVerticalScroller = false
+        // Vertical scrolling belongs to the transcript; the block sizes itself instead.
+        scrollView.verticalScrollElasticity = .none
+        scrollView.autohidesScrollers = true
+        scrollView.drawsBackground = false
+        scrollView.borderType = .noBorder
+
+        let container = NSTextContainer(size: Self.unbounded)
+        container.widthTracksTextView = false
+        container.lineFragmentPadding = 0
+
+        let layoutManager = NSLayoutManager()
+        layoutManager.addTextContainer(container)
+        let storage = NSTextStorage()
+        storage.addLayoutManager(layoutManager)
+
+        context.coordinator.storage = storage
+        context.coordinator.layoutManager = layoutManager
+
+        let textView = NSTextView(frame: .zero, textContainer: container)
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.isRichText = false
+        textView.drawsBackground = false
+        textView.isVerticallyResizable = false
+        textView.isHorizontallyResizable = true
+        textView.autoresizingMask = []
+        textView.textContainerInset = NSSize(width: 12, height: MarkdownCodeBlockView.verticalInset)
+
+        scrollView.documentView = textView
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        guard let textView = scrollView.documentView as? NSTextView,
+              let layoutManager = textView.layoutManager,
+              let container = textView.textContainer else { return }
+
+        let (string, paragraph) = attributed()
+        if textView.textStorage?.matchesChat(string) != true {
+            textView.textStorage?.setAttributedString(string)
+        }
+
+        let (size, _) = measure(layoutManager: layoutManager, container: container,
+                                paragraph: paragraph)
+        let inset = MarkdownCodeBlockView.verticalInset * 2
+        let height = min(size.height + inset, maxHeight)
+        textView.minSize = CGSize(width: size.width, height: max(height - inset, 0))
+        textView.maxSize = CGSize(width: Self.unbounded.width, height: height)
+        textView.frame = NSRect(origin: .zero,
+                                size: CGSize(width: size.width + 24, height: height))
+    }
+}
+
+#else
+
+extension CodeScrollView: UIViewRepresentable {
+
+    func makeUIView(context: Context) -> UIScrollView {
+        let scrollView = UIScrollView()
+        scrollView.showsHorizontalScrollIndicator = true
+        scrollView.showsVerticalScrollIndicator = false
+        scrollView.alwaysBounceVertical = false
+        scrollView.backgroundColor = .clear
+
+        let container = NSTextContainer(size: Self.unbounded)
+        container.widthTracksTextView = false
+        container.lineFragmentPadding = 0
+
+        let layoutManager = NSLayoutManager()
+        layoutManager.addTextContainer(container)
+        let storage = NSTextStorage()
+        storage.addLayoutManager(layoutManager)
+
+        context.coordinator.storage = storage
+        context.coordinator.layoutManager = layoutManager
+
+        let textView = UITextView(frame: .zero, textContainer: container)
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.isScrollEnabled = false
+        textView.backgroundColor = .clear
+        let inset = MarkdownCodeBlockView.verticalInset
+        textView.textContainerInset = UIEdgeInsets(top: inset, left: 12, bottom: inset, right: 12)
+
+        scrollView.addSubview(textView)
+        return scrollView
+    }
+
+    func updateUIView(_ scrollView: UIScrollView, context: Context) {
+        guard let textView = scrollView.subviews.compactMap({ $0 as? UITextView }).first,
+              let container = textView.textContainer as NSTextContainer?
+        else { return }
+        let layoutManager = textView.layoutManager
+
+        // A non-scrolling UITextView clamps its container to its own bounds on every
+        // layout pass. The frame starts at zero, so without restoring the container the
+        // measurement below only ever sees the first line.
+        container.size = Self.unbounded
+
+        let (string, paragraph) = attributed()
+        if !textView.textStorage.matchesChat(string) {
+            textView.textStorage.setAttributedString(string)
+        }
+
+        let (size, _) = measure(layoutManager: layoutManager, container: container,
+                                paragraph: paragraph)
+        let frame = CGRect(origin: .zero,
+                           size: CGSize(width: size.width + 24,
+                                        height: min(size.height + MarkdownCodeBlockView.verticalInset * 2, maxHeight)))
+        textView.frame = frame
+        scrollView.contentSize = frame.size
+    }
+}
+
+#endif
