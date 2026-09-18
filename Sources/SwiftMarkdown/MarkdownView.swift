@@ -133,7 +133,15 @@ public final class MarkdownRenderCoordinator {
 
 public struct MarkdownView: View {
 
-    public let text: String
+    /// Either text this view renders and re-renders itself, or segments somebody else
+    /// already rendered. The second is the cheap one, and the only one that stays cheap
+    /// in a lazy stack — see ``MarkdownSegment/render(_:style:)``.
+    private enum Source {
+        case text(String)
+        case segments([MarkdownSegment])
+    }
+
+    private let source: Source
 
     /// Set to override the system-derived styling. Left `nil`, the view follows
     /// the ambient color scheme on its own.
@@ -143,9 +151,37 @@ public struct MarkdownView: View {
 
     @State private var coordinator = MarkdownRenderCoordinator()
 
+    /// Renders `text`, re-rendering as it changes. Use this for a message that is
+    /// still arriving.
     public init(text: String, style: MarkdownStyle? = nil) {
-        self.text = text
+        self.source = .text(text)
         self.customStyle = style
+    }
+
+    /// Displays segments rendered elsewhere, doing no parsing of its own.
+    ///
+    /// For a transcript: render each finished message once where it is owned — off the
+    /// main actor if you like — and keep the segments. A lazy stack can then build and
+    /// discard rows as often as it wants without re-parsing anything.
+    ///
+    /// The segments must have been rendered with the same `style` passed here, or the
+    /// text will be laid out in one style and decorated in another.
+    public init(segments: [MarkdownSegment], style: MarkdownStyle? = nil) {
+        self.source = .segments(segments)
+        self.customStyle = style
+    }
+
+    private var segments: [MarkdownSegment] {
+        switch source {
+        case .text: return coordinator.segments
+        case .segments(let segments): return segments
+        }
+    }
+
+    /// Nil for the pre-rendered case, which has nothing to react to.
+    private var text: String? {
+        if case .text(let text) = source { return text }
+        return nil
     }
 
     private var style: MarkdownStyle {
@@ -154,7 +190,7 @@ public struct MarkdownView: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            ForEach(coordinator.segments) { segment in
+            ForEach(segments) { segment in
                 switch segment {
                 case .prose(_, let attributed):
                     MarkdownTextViewRepresentable(attributed: attributed, style: style)
@@ -169,9 +205,14 @@ public struct MarkdownView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
-        .onAppear { coordinator.update(text: text, style: style) }
-        .onChange(of: text) { _, newValue in coordinator.update(text: newValue, style: style) }
-        .onChange(of: colorScheme) { _, _ in coordinator.update(text: text, style: style) }
+        .onAppear { render() }
+        .onChange(of: text) { _, _ in render() }
+        .onChange(of: colorScheme) { _, _ in render() }
         .onDisappear { coordinator.stop() }
+    }
+
+    private func render() {
+        guard let text else { return }
+        coordinator.update(text: text, style: style)
     }
 }

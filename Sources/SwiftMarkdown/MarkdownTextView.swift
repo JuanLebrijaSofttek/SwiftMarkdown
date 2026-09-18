@@ -431,8 +431,42 @@ extension MarkdownMeasuring {
         if let measurement, measurement.attributed === attributed, measurement.width == width {
             return measurement.height
         }
-        let height = measuredHeight(of: attributed, width: width)
+        let height = MarkdownHeightCache.height(of: attributed, width: width)
         measurement = MarkdownMeasurement(attributed: attributed, width: width, height: height)
+        return height
+    }
+}
+
+/// Measured heights, kept outside the views that use them.
+///
+/// The per-view cache above dies with its view, which in a lazy stack is every time a
+/// row scrolls far enough away. Laying the same settled message out again on the way
+/// back costs exactly what it cost the first time. Keyed on the attributed string
+/// itself, so pre-rendered segments — which outlive any view — keep their heights for
+/// as long as the caller holds them.
+@MainActor
+enum MarkdownHeightCache {
+
+    /// Weak keys with pointer identity: the entry goes away with the string it measured,
+    /// and comparing two long attributed strings for equality would cost more than the
+    /// measurement this is saving.
+    private static let heights = NSMapTable<NSAttributedString, NSMutableDictionary>(
+        keyOptions: [.weakMemory, .objectPointerPersonality],
+        valueOptions: .strongMemory)
+
+    static func height(of attributed: NSAttributedString, width: CGFloat) -> CGFloat {
+        let key = width as NSNumber
+        if let widths = heights.object(forKey: attributed),
+           let height = widths[key] as? CGFloat {
+            return height
+        }
+        let height = measuredHeight(of: attributed, width: width)
+        let widths = heights.object(forKey: attributed) ?? {
+            let fresh = NSMutableDictionary()
+            heights.setObject(fresh, forKey: attributed)
+            return fresh
+        }()
+        widths[key] = height
         return height
     }
 }

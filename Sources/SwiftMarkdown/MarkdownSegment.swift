@@ -39,6 +39,20 @@ public enum MarkdownSegment: Identifiable {
         }
     }
 
+    /// Renders `text` in one pass, for a message that is already finished.
+    ///
+    /// The streaming path exists to make the *next* delta cheap, and a transcript of
+    /// settled messages never sends one — it pays only this, and pays it again every
+    /// time a lazy stack rebuilds a row that scrolled away. Rendering once where the
+    /// message is owned and handing the result to `MarkdownView(segments:)` moves this
+    /// off the scroll path entirely.
+    ///
+    /// Nothing here touches UIKit or AppKit state, so it is safe to call off the main
+    /// actor and hand the result across — see the `Sendable` note on this type.
+    public static func render(_ text: String, style: MarkdownStyle) -> [MarkdownSegment] {
+        split(MarkdownBlockParser.parse(text), style: style)
+    }
+
     /// Groups blocks into segments, coalescing consecutive prose so selection breaks
     /// only where a code block or a table actually sits.
     public static func split(_ blocks: [MarkdownBlock], style: MarkdownStyle) -> [MarkdownSegment] {
@@ -172,6 +186,13 @@ public enum MarkdownSegment: Identifiable {
                                   proseTail: proseTail)
     }
 }
+
+/// Safe to move between actors despite holding a reference type: an attributed string
+/// handed to a segment is never written to again. The builder finishes each one before
+/// it becomes a segment, and the prose-tail cache deliberately keeps a *separate* object
+/// from the one it hands back, so the two can never alias. Anything that starts mutating
+/// a segment's payload in place breaks this, and the compiler will not say so.
+extension MarkdownSegment: @unchecked Sendable {}
 
 /// The result of a split, plus what the next split needs to avoid redoing it.
 public struct MarkdownSegmentSet {

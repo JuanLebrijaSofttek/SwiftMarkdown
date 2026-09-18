@@ -9,7 +9,11 @@
 
 import SwiftUI
 
-public struct MarkdownStyle {
+/// `@unchecked` because `PlatformColor` and `PlatformFont` are classes. Both are
+/// read-only here — a style is copied on assignment and its colours are never mutated,
+/// only asked for their components — which is what lets a caller render off the main
+/// actor with the same style the view uses.
+public struct MarkdownStyle: @unchecked Sendable {
 
     // Changing any of these by hand drops the recorded identity, so a style adjusted
     // after it was built is no longer mistaken for the one it was built from.

@@ -30,6 +30,33 @@ struct AnswerView: View {
 Assign to `text` as often as you like — deltas are coalesced to one render per
 frame, and the view stops its timer after ~1s of quiet.
 
+### Transcripts
+
+`MarkdownView(text:)` parses in `onAppear`. That's right for a message that is
+still arriving and wrong for fifty that aren't: in a `LazyVStack` every row pays
+it on the way in, and pays it again each time a row that scrolled away is
+rebuilt. Render finished messages once, where they're owned:
+
+```swift
+// Off the main actor if you like — segments and styles both cross.
+let segments = await Task.detached { MarkdownSegment.render(text, style: style) }.value
+
+MarkdownView(segments: segments, style: style)
+```
+
+The view then does no parsing at all, and measured heights are cached against the
+segments rather than against the view that measured them, so they survive a row
+being discarded. Measured, one row appearing (8K characters, macOS):
+
+| | first appearance | every appearance after |
+|---|---|---|
+| `MarkdownView(text:)` | 15.8ms | 15.8ms |
+| `MarkdownView(segments:)` | 4.4ms | 0.02ms |
+
+Pass the same style you rendered with — segments carry their own fonts and
+colors, so a mismatch lays the text out in one style and decorates it in
+another.
+
 ## How the incremental path works
 
 Three layers, each able to resume from its own previous result:
@@ -48,6 +75,9 @@ headings, prose, lists and quotes — selection drags continuously across all of
 them. Code blocks and tables split out because they scroll horizontally, which a
 shared text container can't express. Settled prose segments are handed back as
 the same object, not an equal one, so SwiftUI skips them.
+
+`MarkdownSegment.render(_:style:)` is the whole of this skipped: one parse, one
+split, no reuse machinery, for text that will never change again.
 
 **`MarkdownRenderCoordinator`** owns the frame throttle and holds the previous
 document and segment set, feeding each back in. A style change bypasses the
