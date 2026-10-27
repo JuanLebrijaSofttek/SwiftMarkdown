@@ -54,6 +54,11 @@ public enum MarkdownAttributedBuilder {
     /// between one row and the next and rule a line there.
     public static let tableRowAttribute = NSAttributedString.Key("SwiftMarkdownTableRow")
 
+    /// Marks a citation chip's label, with the page it links to as the value, so the
+    /// text view can draw the pill behind it. The pill is not a text attribute:
+    /// `.backgroundColor` is a square, line-high box.
+    public static let citationAttribute = NSAttributedString.Key("SwiftMarkdownCitation")
+
     /// Draws a blue box around every block the builder emits — one per heading,
     /// paragraph, list, quote, table, rule and code block — so the gaps between them
     /// can be seen rather than inferred. Debugging aid, off by default; the ranges are
@@ -224,7 +229,7 @@ public enum MarkdownAttributedBuilder {
 
     private static func bodyParagraphStyle(_ style: MarkdownStyle) -> NSParagraphStyle {
         let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = 3
+        paragraph.lineSpacing = 5
         paragraph.paragraphSpacing = blockSpacing
         return paragraph
     }
@@ -235,7 +240,7 @@ public enum MarkdownAttributedBuilder {
 
         let indent = CGFloat(depth) * 18
         let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = 3
+        paragraph.lineSpacing = 5
         paragraph.paragraphSpacing = blockSpacing
         paragraph.firstLineHeadIndent = indent
         paragraph.headIndent = indent
@@ -255,7 +260,7 @@ public enum MarkdownAttributedBuilder {
         let font = PlatformFont.markdownMono(size: style.bodyFontSize * 0.95)
 
         let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = 2
+        paragraph.lineSpacing = 4
         paragraph.firstLineHeadIndent = 12
         paragraph.headIndent = 12
         paragraph.tailIndent = -12
@@ -317,7 +322,7 @@ public enum MarkdownAttributedBuilder {
             }
 
             let paragraph = NSMutableParagraphStyle()
-            paragraph.lineSpacing = 3
+            paragraph.lineSpacing = 5
             paragraph.paragraphSpacing = blockSpacing
             paragraph.firstLineHeadIndent = indent
             // Wrapped lines align with the text, not the marker.
@@ -350,7 +355,7 @@ public enum MarkdownAttributedBuilder {
         paragraph.alignment = .center
         paragraph.paragraphSpacingBefore = blockSpacing
         paragraph.paragraphSpacing = blockSpacing
-        paragraph.lineSpacing = 3
+        paragraph.lineSpacing = 5
 
         let out = inlines(content, style: style,
                           font: mathFont(size: style.bodyFontSize * 1.05),
@@ -399,7 +404,7 @@ public enum MarkdownAttributedBuilder {
             for detail in definition.details {
                 out.append(NSAttributedString(string: "\n"))
                 let paragraph = NSMutableParagraphStyle()
-                paragraph.lineSpacing = 3
+                paragraph.lineSpacing = 5
                 paragraph.firstLineHeadIndent = 18
                 paragraph.headIndent = 18
                 paragraph.paragraphSpacing = blockSpacing
@@ -415,7 +420,7 @@ public enum MarkdownAttributedBuilder {
     private static func footnote(label: String, content: [MarkdownInline], style: MarkdownStyle) -> NSAttributedString {
         let font = PlatformFont.markdownSystem(size: style.bodyFontSize * 0.9)
         let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = 2
+        paragraph.lineSpacing = 4
         paragraph.firstLineHeadIndent = 0
         paragraph.headIndent = 18
         paragraph.paragraphSpacing = blockSpacing
@@ -562,7 +567,7 @@ public enum MarkdownAttributedBuilder {
         let scale = metrics.scale
 
         let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = 2
+        paragraph.lineSpacing = 4
         // The row's own padding, which also gives the rules between rows somewhere
         // to sit that isn't tight against the type.
         paragraph.paragraphSpacing = MarkdownTableMetrics.verticalPadding
@@ -623,10 +628,29 @@ public enum MarkdownAttributedBuilder {
     private static func inlines(_ nodes: [MarkdownInline], style: MarkdownStyle,
                                 font: PlatformFont, color: PlatformColor) -> NSMutableAttributedString {
         let out = NSMutableAttributedString()
-        for node in nodes {
+        for node in style.citationChips ? unparenthesizingCitations(nodes) : nodes {
             out.append(inline(node, style: style, font: font, color: color))
         }
         return out
+    }
+
+    /// Drops the "(" and ")" a reply puts around a citation: the chip is already
+    /// set apart, and "(arxiv)" reads as a pill inside brackets.
+    private static func unparenthesizingCitations(_ nodes: [MarkdownInline]) -> [MarkdownInline] {
+        func isChip(_ node: MarkdownInline) -> Bool {
+            if case .link(_, let destination) = node { return siteName(of: destination) != nil }
+            return false
+        }
+        var nodes = nodes
+        for index in nodes.indices where isChip(nodes[index]) {
+            guard index > 0, index + 1 < nodes.count,
+                  case .text(let before) = nodes[index - 1], before.hasSuffix("("),
+                  case .text(let after) = nodes[index + 1], after.hasPrefix(")")
+            else { continue }
+            nodes[index - 1] = .text(String(before.dropLast()))
+            nodes[index + 1] = .text(String(after.dropFirst()))
+        }
+        return nodes
     }
 
     private static func inline(_ node: MarkdownInline, style: MarkdownStyle,
@@ -688,6 +712,21 @@ public enum MarkdownAttributedBuilder {
                              range: NSRange(location: 1, length: out.length - 2))
             return out
 
+        case .link(_, let destination) where style.citationChips && siteName(of: destination) != nil:
+            let name = siteName(of: destination) ?? destination
+            // Thin spaces keep the pill's padding off the neighbouring words; they are
+            // outside the marked range, which is what the pill is drawn around.
+            let out = NSMutableAttributedString(string: "\u{2009}\(name)\u{2009}", attributes: [
+                .font: PlatformFont.markdownSystem(size: font.pointSize * 0.85),
+                .foregroundColor: style.secondaryColor,
+            ])
+            let label = NSRange(location: 1, length: out.length - 2)
+            if let url = URL(string: destination) {
+                out.addAttribute(.link, value: url, range: label)
+            }
+            out.addAttribute(citationAttribute, value: destination, range: label)
+            return out
+
         case .link(let children, let destination):
             let out = inlines(children, style: style, font: font, color: style.accentColor)
             let range = NSRange(location: 0, length: out.length)
@@ -721,6 +760,27 @@ public enum MarkdownAttributedBuilder {
 }
 
 // MARK: - Helpers
+
+extension MarkdownAttributedBuilder {
+
+    /// The name of the site an `http(s)` address is on, as a chip shows it: the host
+    /// without `www.` and without its suffix, so `developers.google.com` is `google` and
+    /// `news.bbc.co.uk` is `bbc`. `nil` for anything that is not a web address.
+    static func siteName(of destination: String) -> String? {
+        guard let url = URL(string: destination),
+              ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+              let host = url.host?.lowercased(), !host.isEmpty
+        else { return nil }
+        var labels = host.split(separator: ".").map(String.init)
+        guard labels.count > 1 else { return host }
+        labels.removeLast()
+        // `co.uk`, `com.mx`: a second-level suffix is not the site.
+        if labels.count > 1, ["co", "com", "org", "net", "gov", "edu", "ac"].contains(labels.last ?? "") {
+            labels.removeLast()
+        }
+        return labels.last
+    }
+}
 
 
 private extension Array {

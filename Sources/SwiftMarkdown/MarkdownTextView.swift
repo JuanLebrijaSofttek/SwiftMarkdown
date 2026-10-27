@@ -78,6 +78,23 @@ enum MarkdownDecoration {
             fill(roundedRect: rect, radius: codeCornerRadius)
         }
 
+        // A citation chip is a pill sized to its own text, not to the line it sits in:
+        // the line is as tall as its spacing makes it, which would draw a bar.
+        storage.enumerateAttribute(MarkdownAttributedBuilder.citationAttribute, in: scope) { value, range, _ in
+            guard value != nil,
+                  let font = storage.attribute(.font, at: range.location, effectiveRange: nil) as? PlatformFont
+            else { return }
+            let glyphs = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            let line = layoutManager.lineFragmentRect(forGlyphAt: glyphs.location, effectiveRange: nil)
+            let baseline = line.minY + layoutManager.location(forGlyphAt: glyphs.location).y
+            let text = layoutManager.boundingRect(forGlyphRange: glyphs, in: container)
+            let rect = CGRect(x: text.minX - 6, y: baseline - font.ascender - 3,
+                              width: text.width + 12, height: font.ascender - font.descender + 6)
+                .offsetBy(dx: origin.x, dy: origin.y)
+            style.codeBackground.setFill()
+            fill(roundedRect: rect, radius: rect.height / 2)
+        }
+
         if MarkdownAttributedBuilder.debugBlockBorders {
             storage.enumerateAttribute(MarkdownAttributedBuilder.blockBoundaryAttribute, in: scope) { value, range, _ in
                 guard value != nil else { return }
@@ -296,8 +313,10 @@ public struct MarkdownTextViewRepresentable: NSViewRepresentable {
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
         textView.autoresizingMask = [.width]
+        // No colour here: AppKit paints a link in this dictionary's colour over the run's
+        // own, and the builder already colours each link, a citation chip differently
+        // from a plain link.
         textView.linkTextAttributes = [
-            .foregroundColor: style.accentColor,
             .cursor: NSCursor.pointingHand,
         ]
         textView.style = style

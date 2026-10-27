@@ -28,6 +28,12 @@ public struct MarkdownStyle: @unchecked Sendable {
     /// Fill for the code block's header strip.
     public var codeHeaderBackground: PlatformColor { didSet { identity = "" } }
 
+    /// Draws a web link as a small pill holding the site's name, rather than as the
+    /// underlined label it was written with. For a reply that cites its sources
+    /// inline, where the label is a claim's worth of text the pill replaces with the
+    /// place it came from. Left off, every link keeps its own label.
+    public var citationChips: Bool { didSet { identity = "" } }
+
     /// Width the text will be laid out in, when the caller knows it. Only the
     /// tab-stop table path consults it — that layout has to size its columns up
     /// front, having no equivalent of AppKit's automatic table layout to defer to.
@@ -42,6 +48,7 @@ public struct MarkdownStyle: @unchecked Sendable {
     var identity: String = ""
 
     public init(bodyFontSize: CGFloat = PlatformFont.markdownBodySize,
+                citationChips: Bool = false,
                 textColor: PlatformColor,
                 secondaryColor: PlatformColor,
                 accentColor: PlatformColor,
@@ -53,6 +60,7 @@ public struct MarkdownStyle: @unchecked Sendable {
                 contentWidth: CGFloat? = nil,
                 headingScales: [CGFloat] = [1.7, 1.4, 1.2, 1.08, 1.0, 0.95]) {
         self.bodyFontSize = bodyFontSize
+        self.citationChips = citationChips
         self.textColor = textColor
         self.secondaryColor = secondaryColor
         self.accentColor = accentColor
@@ -73,7 +81,7 @@ public struct MarkdownStyle: @unchecked Sendable {
     /// palette would never match, and every cache keyed on this would miss every time.
     static func key(for style: MarkdownStyle) -> String {
         style.identity.isEmpty
-            ? "\(style.bodyFontSize)-\(style.textColor)-\(style.codeBackground)-\(style.accentColor)"
+            ? "\(style.bodyFontSize)-\(style.citationChips)-\(style.textColor)-\(style.codeBackground)-\(style.accentColor)"
             : style.identity
     }
 
@@ -84,9 +92,11 @@ public struct MarkdownStyle: @unchecked Sendable {
     /// where there is no environment to ask — pass `colorScheme == .dark`.
     public static func standard(appearanceIsDark: Bool,
                                 bodyFontSize: CGFloat = PlatformFont.markdownBodySize,
+                                citationChips: Bool = false,
                                 contentWidth: CGFloat? = nil) -> MarkdownStyle {
         var style = MarkdownStyle(
             bodyFontSize: bodyFontSize,
+            citationChips: citationChips,
             textColor: .markdownLabel,
             secondaryColor: .markdownSecondaryLabel,
             accentColor: .markdownAccent,
@@ -100,7 +110,7 @@ public struct MarkdownStyle: @unchecked Sendable {
             contentWidth: contentWidth)
         // Width belongs in the identity: it changes what the table path builds, so a
         // style that differs only by width must not be mistaken for a cache hit.
-        style.identity = "standard-\(appearanceIsDark)-\(bodyFontSize)-\(contentWidth ?? -1)"
+        style.identity = "standard-\(appearanceIsDark)-\(bodyFontSize)-\(citationChips)-\(contentWidth ?? -1)"
         return style
     }
 }

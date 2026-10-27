@@ -188,7 +188,7 @@ private struct HighlightedCodeScrollView {
     func attributed() -> (NSAttributedString, NSParagraphStyle) {
         let font = PlatformFont.markdownMono(size: fontSize)
         let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = 2
+        paragraph.lineSpacing = 4
         paragraph.lineBreakMode = .byClipping
 
         let isSwift = (language ?? "").caseInsensitiveCompare("swift") == .orderedSame

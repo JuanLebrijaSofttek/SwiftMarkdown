@@ -350,3 +350,53 @@ struct MarkdownMathTests {
     }
 }
 
+
+@Suite("Markdown autolinks")
+struct MarkdownAutolinkTests {
+
+    private func link(_ url: String, to destination: String? = nil) -> MarkdownInline {
+        .link(children: [.text(url)], destination: destination ?? url)
+    }
+
+    @Test("A bare URL is a link, without the sentence's full stop")
+    func bareURL() {
+        #expect(MarkdownInlineParser.parse("See https://example.com/a?b=1.")
+            == [.text("See "), link("https://example.com/a?b=1"), .text(".")])
+    }
+
+    @Test("A www. address links over https")
+    func www() {
+        #expect(MarkdownInlineParser.parse("at www.swift.org, today")
+            == [.text("at "), link("www.swift.org", to: "https://www.swift.org"), .text(", today")])
+    }
+
+    @Test("Angle brackets mark a URL explicitly")
+    func angle() {
+        #expect(MarkdownInlineParser.parse("<https://example.com/x y>") == [.text("<https://example.com/x y>")])
+        #expect(MarkdownInlineParser.parse("<https://example.com/x>") == [link("https://example.com/x")])
+    }
+
+    @Test("A closing parenthesis is kept when the URL opened one, and dropped when it wraps the URL")
+    func parentheses() {
+        #expect(MarkdownInlineParser.parse("(https://en.wikipedia.org/wiki/Swift_(programming_language))")
+            == [.text("("), link("https://en.wikipedia.org/wiki/Swift_(programming_language)"), .text(")")])
+    }
+
+    @Test("A URL inside a link's label stays text, and a link's destination is not re-linked")
+    func insideLink() {
+        #expect(MarkdownInlineParser.parse("[https://a.example](https://b.example)")
+            == [.link(children: [.text("https://a.example")], destination: "https://b.example")])
+    }
+
+    @Test("Mid-word, in code, or a bare scheme are not links")
+    func notLinks() {
+        #expect(MarkdownInlineParser.parse("xhttps://example.com") == [.text("xhttps://example.com")])
+        #expect(MarkdownInlineParser.parse("`https://example.com`") == [.code("https://example.com")])
+        #expect(MarkdownInlineParser.parse("https:// and www.") == [.text("https:// and www.")])
+    }
+
+    @Test("A URL inside emphasis is still a link")
+    func inEmphasis() {
+        #expect(MarkdownInlineParser.parse("**https://example.com**") == [.strong([link("https://example.com")])])
+    }
+}

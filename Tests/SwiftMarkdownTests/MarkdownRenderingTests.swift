@@ -227,3 +227,34 @@ struct RenderCoordinatorTests {
         #expect(MarkdownRenderCoordinator.key(for: style) != MarkdownRenderCoordinator.key(for: other))
     }
 }
+
+@Suite("Citation chips")
+struct CitationChipTests {
+
+    private func chipped(_ markdown: String) -> NSAttributedString {
+        let style = MarkdownStyle.standard(appearanceIsDark: false, citationChips: true)
+        return MarkdownAttributedBuilder.build(MarkdownBlockParser.parse(markdown), style: style).attributed
+    }
+
+    @Test("A web link becomes its site's name, marked for the pill and still a link")
+    func chip() {
+        let text = chipped("Claims [a long label](https://developers.google.com/x) end")
+        #expect(text.string.contains("google"))
+        #expect(!text.string.contains("long label"))
+        let at = (text.string as NSString).range(of: "google").location
+        #expect(text.attribute(MarkdownAttributedBuilder.citationAttribute, at: at, effectiveRange: nil) != nil)
+        #expect(text.attribute(.link, at: at, effectiveRange: nil) != nil)
+    }
+
+    @Test("Site names drop www, subdomains and country suffixes")
+    func siteNames() {
+        #expect(MarkdownAttributedBuilder.siteName(of: "https://www.emulent.com/a") == "emulent")
+        #expect(MarkdownAttributedBuilder.siteName(of: "https://news.bbc.co.uk/a") == "bbc")
+        #expect(MarkdownAttributedBuilder.siteName(of: "mailto:a@b.com") == nil)
+    }
+
+    @Test("Off by default: a link keeps its label")
+    func off() {
+        #expect(render("[label](https://example.com)").attributed.string.contains("label"))
+    }
+}

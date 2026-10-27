@@ -223,7 +223,7 @@ private struct CodeScrollView {
     func attributed() -> (NSAttributedString, NSParagraphStyle) {
         let font = PlatformFont.markdownMono(size: fontSize)
         let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = 2
+        paragraph.lineSpacing = 4
         // The whole point of this view: never wrap.
         paragraph.lineBreakMode = .byClipping
 
