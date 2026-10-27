@@ -12,12 +12,14 @@ public enum MarkdownInlineParser {
 
     public static func parse(_ text: String) -> [MarkdownInline] {
         let chars = Array(text)
-        return parse(chars, 0, chars.count)
+        return parse(chars, 0, chars.count, autolinks: true)
     }
 
     // MARK: - Core
 
-    private static func parse(_ c: [Character], _ lo: Int, _ hi: Int) -> [MarkdownInline] {
+    /// `autolinks` is off inside a link's label: a URL there is the label's
+    /// text, and a link inside a link has nowhere to go.
+    private static func parse(_ c: [Character], _ lo: Int, _ hi: Int, autolinks: Bool) -> [MarkdownInline] {
         var out: [MarkdownInline] = []
         var buf = ""
         var i = lo
@@ -72,6 +74,16 @@ public enum MarkdownInlineParser {
                 }
             }
 
+            // Autolinks: `<https://…>`, and bare `https://…` or `www.…` URLs as
+            // GitHub renders them. Models write sources as bare URLs as often as
+            // as links, and a URL that cannot be clicked has to be copied by hand.
+            if autolinks, let link = scanAutolink(c, at: i, lo: lo, hi: hi) {
+                flush()
+                out.append(.link(children: [.text(link.text)], destination: link.destination))
+                i = link.end
+                continue
+            }
+
             // Image: ![alt](src)
             if ch == "!", i + 1 < hi, c[i + 1] == "[",
                let link = scanLink(c, at: i + 1, hi: hi) {
@@ -92,7 +104,8 @@ public enum MarkdownInlineParser {
                 }
                 if let link = scanLink(c, at: i, hi: hi) {
                     flush()
-                    out.append(.link(children: parse(c, link.labelRange.lowerBound, link.labelRange.upperBound),
+                    out.append(.link(children: parse(c, link.labelRange.lowerBound, link.labelRange.upperBound,
+                                                     autolinks: false),
                                      destination: link.destination))
                     i = link.end
                     continue
@@ -102,7 +115,7 @@ public enum MarkdownInlineParser {
             // Paired delimiters, longest first so ** beats * and ~~ beats ~.
             if let match = matchDelimiter(c, at: i, hi: hi) {
                 flush()
-                out.append(match.wrap(parse(c, i + match.length, match.closeIndex)))
+                out.append(match.wrap(parse(c, i + match.length, match.closeIndex, autolinks: autolinks)))
                 i = match.closeIndex + match.length
                 continue
             }
@@ -240,6 +253,69 @@ public enum MarkdownInlineParser {
             dest = String(dest.dropFirst().dropLast())
         }
         return dest
+    }
+
+    // MARK: - Autolinks
+
+    private struct AutolinkScan {
+        let text: String
+        let destination: String
+        let end: Int
+    }
+
+    private static let schemes = ["https://", "http://"]
+
+    /// A URL starting at `i`, as GitHub's extended autolinks read one.
+    ///
+    /// Bare URLs start at a word boundary and end at whitespace or `<`; trailing
+    /// punctuation that ends the sentence rather than the URL — `.`, `,`, `)` with
+    /// no `(` to close, quotes — is left out, so "see https://example.com." links
+    /// `https://example.com`.
+    private static func scanAutolink(_ c: [Character], at i: Int, lo: Int, hi: Int) -> AutolinkScan? {
+        if c[i] == "<" {
+            guard let close = find(c, from: i + 1, hi: hi, char: ">") else { return nil }
+            let inner = String(c[(i + 1)..<close])
+            guard schemes.contains(where: { inner.lowercased().hasPrefix($0) }),
+                  !inner.contains(where: \.isWhitespace), inner.count > 8
+            else { return nil }
+            return AutolinkScan(text: inner, destination: inner, end: close + 1)
+        }
+
+        guard c[i] == "h" || c[i] == "H" || c[i] == "w" || c[i] == "W" else { return nil }
+        if i > lo {
+            let before = c[i - 1]
+            guard before.isWhitespace || "*_~(\"'".contains(before) else { return nil }
+        }
+        let head = String(c[i..<min(hi, i + 8)]).lowercased()
+        let isWWW = head.hasPrefix("www.")
+        guard isWWW || schemes.contains(where: { head.hasPrefix($0) }) else { return nil }
+
+        var end = i
+        while end < hi, !c[end].isWhitespace, c[end] != "<" { end += 1 }
+        // Trim what reads as the sentence's punctuation, then any `)` the URL
+        // did not open.
+        while end > i {
+            let last = c[end - 1]
+            if "?!.,:;*_~'\"".contains(last) {
+                end -= 1
+            } else if last == ")" {
+                let opens = c[i..<end].filter { $0 == "(" }.count
+                let closes = c[i..<end].filter { $0 == ")" }.count
+                guard closes > opens else { break }
+                end -= 1
+            } else {
+                break
+            }
+        }
+        let text = String(c[i..<end])
+        // Something after the scheme, and a dot in the host: `https://` alone
+        // and `www.` alone are words.
+        let rest = isWWW ? String(text.dropFirst(4)) : String(text.drop { $0 != "/" }.dropFirst(2))
+        let host = rest.prefix { $0 != "/" && $0 != "?" && $0 != "#" }
+        guard !host.isEmpty, isWWW ? host.contains(".") : true,
+              host.allSatisfy({ $0.isLetter || $0.isNumber || "-._:[]@".contains($0) })
+        else { return nil }
+        return AutolinkScan(text: text, destination: isWWW ? "https://" + text : text, end: end)
     }
 
     // MARK: - Scanning helpers
