@@ -225,9 +225,9 @@ public struct MarkdownView: View {
     public var body: some View {
         Group {
             if isLazy {
-                LazyVStack(alignment: .leading, spacing: 2) { segmentViews }
+                LazyVStack(alignment: .leading, spacing: MarkdownAttributedBuilder.blockSpacing) { segmentViews }
             } else {
-                VStack(alignment: .leading, spacing: 2) { segmentViews }
+                VStack(alignment: .leading, spacing: MarkdownAttributedBuilder.blockSpacing) { segmentViews }
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)

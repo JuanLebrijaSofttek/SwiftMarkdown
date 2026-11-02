@@ -95,6 +95,33 @@ enum MarkdownDecoration {
             fill(roundedRect: rect, radius: rect.height / 2)
         }
 
+        // An inline code span gets a softly rounded box hugging its glyphs, one per line
+        // when the span wraps. Sized from the font, not the line fragment, for the same
+        // reason as the chip: the fragment includes line spacing and would draw a bar.
+        storage.enumerateAttribute(MarkdownAttributedBuilder.inlineCodeAttribute, in: scope) { value, range, _ in
+            guard value != nil,
+                  let font = storage.attribute(.font, at: range.location, effectiveRange: nil) as? PlatformFont
+            else { return }
+            let pad = MarkdownAttributedBuilder.inlineCodePadding
+            let glyphs = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            var index = glyphs.location
+            while index < NSMaxRange(glyphs) {
+                var lineGlyphs = NSRange()
+                let line = layoutManager.lineFragmentRect(forGlyphAt: index, effectiveRange: &lineGlyphs)
+                let piece = NSIntersectionRange(lineGlyphs, glyphs)
+                guard piece.length > 0 else { break }
+                let baseline = line.minY + layoutManager.location(forGlyphAt: piece.location).y
+                let text = layoutManager.boundingRect(forGlyphRange: piece, in: container)
+                let rect = CGRect(x: text.minX - pad, y: baseline - font.ascender - 2,
+                                  width: text.width + pad * 2,
+                                  height: font.ascender - font.descender + 4)
+                    .offsetBy(dx: origin.x, dy: origin.y)
+                PlatformColor.markdownQuaternaryLabel.setFill()
+                fill(roundedRect: rect, radius: 5)
+                index = NSMaxRange(piece)
+            }
+        }
+
         if MarkdownAttributedBuilder.debugBlockBorders {
             storage.enumerateAttribute(MarkdownAttributedBuilder.blockBoundaryAttribute, in: scope) { value, range, _ in
                 guard value != nil else { return }

@@ -8,6 +8,7 @@
 //
 
 import Foundation
+import CoreText
 #if canImport(AppKit)
 import AppKit
 #elseif canImport(UIKit)
@@ -59,6 +60,13 @@ public enum MarkdownAttributedBuilder {
     /// `.backgroundColor` is a square, line-high box.
     public static let citationAttribute = NSAttributedString.Key("SwiftMarkdownCitation")
 
+    /// Marks an inline code span's text so the text view can draw a rounded box behind
+    /// it, sized to the glyphs rather than to the whole line as `.backgroundColor` is.
+    public static let inlineCodeAttribute = NSAttributedString.Key("SwiftMarkdownInlineCode")
+
+    /// Room between an inline code span's text and the edge of its box.
+    public static let inlineCodePadding: CGFloat = 4
+
     /// Draws a blue box around every block the builder emits — one per heading,
     /// paragraph, list, quote, table, rule and code block — so the gaps between them
     /// can be seen rather than inferred. Debugging aid, off by default; the ranges are
@@ -72,7 +80,19 @@ public enum MarkdownAttributedBuilder {
     /// The gap between any two blocks — headings, prose, lists, quotes, rules, code.
     /// One number on purpose: individual blocks no longer choose their own spacing,
     /// so widening one is a deliberate exception rather than the default.
-    public static let blockSpacing: CGFloat = 2
+    ///
+    /// Matched to Xcode's Markdown preview, where consecutive paragraphs sit roughly
+    /// 48pt baseline to baseline: that minus a body line's own 20.5pt height. Applied
+    /// *after* each block only — spacing before as well would double every gap.
+    public static let blockSpacing: CGFloat = 28
+
+    /// Extra room below a heading, which Xcode sets slightly further from the text it
+    /// introduces than from the text above it.
+    public static let headingTrailingExtra: CGFloat = 4
+
+    /// The gap between items of one list (and between related lines such as a
+    /// definition's term and details): enough to separate items, far short of a block break.
+    public static let listItemSpacing: CGFloat = 4
 
     public static func build(_ blocks: [MarkdownBlock], style: MarkdownStyle) -> MarkdownRenderResult {
         let result = NSMutableAttributedString()
@@ -210,8 +230,7 @@ public enum MarkdownAttributedBuilder {
         let base = PlatformFont.markdownSystem(size: size, weight: .bold)
 
         let paragraph = NSMutableParagraphStyle()
-        paragraph.paragraphSpacingBefore = blockSpacing
-        paragraph.paragraphSpacing = blockSpacing
+        paragraph.paragraphSpacing = blockSpacing + headingTrailingExtra
         paragraph.lineHeightMultiple = 1.05
 
         let out = inlines(content, style: style, font: base, color: style.textColor)
@@ -277,7 +296,7 @@ public enum MarkdownAttributedBuilder {
         // Every newline inside the code is a paragraph break, so block spacing has to be
         // applied to the first and last lines only — putting it on `paragraph` would
         // insert the gap between every single line of code.
-        applyOuterSpacing(before: blockSpacing, after: blockSpacing, to: out, base: paragraph)
+        applyOuterSpacing(before: 0, after: blockSpacing, to: out, base: paragraph)
         return out
     }
 
@@ -309,6 +328,9 @@ public enum MarkdownAttributedBuilder {
             if index > 0 { out.append(NSAttributedString(string: "\n")) }
 
             let indent = CGFloat(item.depth) * 18
+            // Xcode insets the bullet from the margin rather than hanging it on it.
+            // Numbers start further left than bullets so "10." still fits before the tab.
+            var markerIndent = indent + 12
             let markerText: String
             var markerColor = style.secondaryColor
             switch item.marker {
@@ -316,6 +338,7 @@ public enum MarkdownAttributedBuilder {
                 markerText = item.depth % 2 == 0 ? "•\t" : "◦\t"
             case .ordered(let number):
                 markerText = "\(number).\t"
+                markerIndent = indent + 4
             case .task(let checked):
                 markerText = checked ? "☑\t" : "☐\t"
                 if checked { markerColor = style.accentColor }
@@ -323,11 +346,12 @@ public enum MarkdownAttributedBuilder {
 
             let paragraph = NSMutableParagraphStyle()
             paragraph.lineSpacing = 5
-            paragraph.paragraphSpacing = blockSpacing
-            paragraph.firstLineHeadIndent = indent
+            // Items sit close; only the list as a whole is set off as a block.
+            paragraph.paragraphSpacing = index == items.count - 1 ? blockSpacing : listItemSpacing
+            paragraph.firstLineHeadIndent = markerIndent
             // Wrapped lines align with the text, not the marker.
-            paragraph.headIndent = indent + 20
-            paragraph.tabStops = [NSTextTab(textAlignment: .left, location: indent + 20)]
+            paragraph.headIndent = indent + 28
+            paragraph.tabStops = [NSTextTab(textAlignment: .left, location: indent + 28)]
 
             out.append(NSAttributedString(string: markerText, attributes: [
                 .font: font,
@@ -353,7 +377,6 @@ public enum MarkdownAttributedBuilder {
     private static func mathBlock(_ content: [MarkdownInline], style: MarkdownStyle) -> NSAttributedString {
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .center
-        paragraph.paragraphSpacingBefore = blockSpacing
         paragraph.paragraphSpacing = blockSpacing
         paragraph.lineSpacing = 5
 
@@ -372,8 +395,8 @@ public enum MarkdownAttributedBuilder {
 
     private static func thematicBreak(style: MarkdownStyle) -> NSAttributedString {
         let paragraph = NSMutableParagraphStyle()
-        paragraph.paragraphSpacingBefore = blockSpacing + 1
-        paragraph.paragraphSpacing = blockSpacing + 1
+        // The block above already leaves `blockSpacing` below itself.
+        paragraph.paragraphSpacing = blockSpacing
         // The carrier line is collapsed to a hairline; without a line-height clamp it
         // reserves a full line box and the rule floats in a band of empty space.
         paragraph.minimumLineHeight = 7
@@ -396,18 +419,23 @@ public enum MarkdownAttributedBuilder {
 
         for (index, definition) in definitions.enumerated() {
             if index > 0 { out.append(NSAttributedString(string: "\n")) }
+            let isLastDefinition = index == definitions.count - 1
             let term = inlines(definition.term, style: style, font: termFont, color: style.textColor)
-            term.addAttribute(.paragraphStyle, value: bodyParagraphStyle(style),
+            let termParagraph = bodyParagraphStyle(style).mutableCopy() as! NSMutableParagraphStyle
+            termParagraph.paragraphSpacing = definition.details.isEmpty && isLastDefinition
+                ? blockSpacing : listItemSpacing
+            term.addAttribute(.paragraphStyle, value: termParagraph,
                               range: NSRange(location: 0, length: term.length))
             out.append(term)
 
-            for detail in definition.details {
+            for (detailIndex, detail) in definition.details.enumerated() {
                 out.append(NSAttributedString(string: "\n"))
                 let paragraph = NSMutableParagraphStyle()
                 paragraph.lineSpacing = 5
                 paragraph.firstLineHeadIndent = 18
                 paragraph.headIndent = 18
-                paragraph.paragraphSpacing = blockSpacing
+                paragraph.paragraphSpacing = isLastDefinition && detailIndex == definition.details.count - 1
+                    ? blockSpacing : listItemSpacing
                 let body = inlines(detail, style: style, font: font, color: style.secondaryColor)
                 body.addAttribute(.paragraphStyle, value: paragraph,
                                   range: NSRange(location: 0, length: body.length))
@@ -423,7 +451,8 @@ public enum MarkdownAttributedBuilder {
         paragraph.lineSpacing = 4
         paragraph.firstLineHeadIndent = 0
         paragraph.headIndent = 18
-        paragraph.paragraphSpacing = blockSpacing
+        // Footnotes read as one list at the end of a message, not separate blocks.
+        paragraph.paragraphSpacing = listItemSpacing
 
         let out = NSMutableAttributedString(string: "\(label). ", attributes: [
             .font: PlatformFont.markdownSystem(size: style.bodyFontSize * 0.9, weight: .semibold),
@@ -452,15 +481,23 @@ public enum MarkdownAttributedBuilder {
         }
     }
 
-    /// The width this table needs to keep every row on one line, ignoring
-    /// `style.contentWidth` — the scrolling table view sizes itself from this.
+    /// The width this table draws at for `style` — wrapped to `style.contentWidth`
+    /// when one is set. The scrolling table view sizes itself from this, so it only
+    /// scrolls when even wrapped columns cannot fit.
     static func tableWidth(_ table: MarkdownTable, style: MarkdownStyle) -> CGFloat {
         let columnCount = max(table.headers.count, table.rows.map(\.count).max() ?? 0)
         guard columnCount > 0 else { return 0 }
-        var unconstrained = style
-        unconstrained.contentWidth = nil
-        return tableMetrics(table, style: unconstrained, columnCount: columnCount).totalWidth
+        return tableMetrics(table, style: style, columnCount: columnCount).totalWidth
     }
+
+    /// Widest a column may grow before its cells wrap, as a multiple of the body size —
+    /// about sixty characters, past which a line of prose gets hard to follow. Keeps a
+    /// table with one long column from turning into a single wide strip.
+    static let maxTableColumnEms: CGFloat = 28
+
+    /// Narrowest a wrapped column is squeezed to, so a column of short words is not
+    /// broken down to one word per line before its neighbours give anything up.
+    static let minTableColumnWidth: CGFloat = 60
 
     private static func tableMetrics(_ table: MarkdownTable, style: MarkdownStyle,
                                      columnCount: Int) -> TableMetrics {
@@ -472,10 +509,11 @@ public enum MarkdownAttributedBuilder {
         /// Narrow enough to stay readable, wide enough that shrinking is a last resort.
         let minimumFontScale: CGFloat = 0.8
 
-        /// Natural width of every column at this scale, measured from the rendered
-        /// cells — so a mono code span or a bold header counts for what it actually
+        /// Natural width of every column at this scale — and the widest single word in
+        /// it, which is as narrow as wrapping can make it — measured from the rendered
+        /// cells, so a mono code span or a bold header counts for what it actually
         /// draws rather than for what the body font would have drawn.
-        func naturalWidths(scale: CGFloat) -> [CGFloat] {
+        func naturalWidths(scale: CGFloat) -> (natural: [CGFloat], minimum: [CGFloat]) {
             let (headerFont, bodyFont) = tableFonts(style: style, scale: scale)
             var rows: [(cells: [[MarkdownInline]], font: PlatformFont)] = []
             if table.hasHeader { rows.append((table.headers, headerFont)) }
@@ -485,14 +523,40 @@ public enum MarkdownAttributedBuilder {
             // widths array crashed the 6.2 compiler in IRGen — see the note in the
             // README; this form is equivalent and does not.
             var widths = [CGFloat](repeating: 0, count: columnCount)
+            var minimums = [CGFloat](repeating: 0, count: columnCount)
             for row in rows {
                 for column in 0..<columnCount {
                     let cell = inlines(row.cells[safe: column] ?? [], style: style,
                                        font: row.font, color: style.textColor)
                     widths[column] = max(widths[column], cell.size().width.rounded(.up))
+                    minimums[column] = max(minimums[column], longestWordWidth(cell))
                 }
             }
-            return widths
+            return (widths, minimums)
+        }
+
+        /// Column widths once long columns wrap: each is capped, then — if the table
+        /// still overflows `budget` — the widest are lowered together to a common
+        /// ceiling, so the narrow columns keep their natural width and the long prose
+        /// columns absorb the squeeze. A column never drops below its longest word.
+        func wrappedWidths(scale: CGFloat, budget: CGFloat?) -> [CGFloat] {
+            let (natural, minimum) = naturalWidths(scale: scale)
+            let cap = style.bodyFontSize * maxTableColumnEms
+            let floors = zip(natural, minimum).map { min($0, max($1, minTableColumnWidth)) }
+            func widths(ceiling: CGFloat) -> [CGFloat] {
+                zip(natural, floors).map { max(min($0, ceiling), $1) }
+            }
+            var ceiling = cap
+            if let budget, widths(ceiling: ceiling).reduce(0, +) > budget {
+                // Binary search for the highest ceiling that fits.
+                var low: CGFloat = 0, high = cap
+                for _ in 0..<24 {
+                    let mid = (low + high) / 2
+                    if widths(ceiling: mid).reduce(0, +) > budget { high = mid } else { low = mid }
+                }
+                ceiling = low
+            }
+            return widths(ceiling: ceiling).map { $0.rounded(.up) }
         }
 
         // Shrink the type only as far as the overflow actually requires, and only down
@@ -500,19 +564,24 @@ public enum MarkdownAttributedBuilder {
         // answer. Iterated because one pass does not land: font sizes quantise, so
         // halving the scale does not halve the measured width, and the gutters between
         // columns are a fixed cost the scale cannot touch.
+        // Wrapping comes first and does most of the work; the type only shrinks
+        // when even fully wrapped columns overflow.
         var scale: CGFloat = 1
-        var widths = naturalWidths(scale: scale)
+        var widths = wrappedWidths(scale: scale, budget: nil)
         if let available = style.contentWidth, available > 0 {
             let insets = MarkdownTableMetrics.horizontalPadding * 2
-            if widths.reduce(0, +) > available - insets - gutter * CGFloat(columnCount - 1) {
+            var budget = available - insets - gutter * CGFloat(columnCount - 1)
+            widths = wrappedWidths(scale: scale, budget: budget)
+            if widths.reduce(0, +) > budget {
                 gutter = tightGutter
+                budget = available - insets - gutter * CGFloat(columnCount - 1)
+                widths = wrappedWidths(scale: scale, budget: budget)
             }
-            let budget = available - insets - gutter * CGFloat(columnCount - 1)
             for _ in 0..<4 {
                 let total = widths.reduce(0, +)
                 guard total > budget, scale > minimumFontScale else { break }
                 scale = max(minimumFontScale, scale * budget / total)
-                widths = naturalWidths(scale: scale)
+                widths = wrappedWidths(scale: scale, budget: budget)
             }
         }
 
@@ -602,10 +671,22 @@ public enum MarkdownAttributedBuilder {
         var rowIndex = 0
         func appendRow(_ cells: [[MarkdownInline]], font: PlatformFont, isHeader: Bool) {
             let start = out.length
-            for column in 0..<columnCount {
-                if column > 0 { out.append(NSAttributedString(string: "\t")) }
-                out.append(inlines(cells[safe: column] ?? [], style: style,
-                                   font: font, color: style.textColor))
+            // A row is one paragraph, so a cell cannot wrap inside its own column. It is
+            // broken into column-width lines here instead, and the row laid out as that
+            // many lines, each tabbing every cell's next line into place. Line
+            // separators, not newlines, so the row stays one paragraph and keeps its box.
+            let cellLines: [[NSAttributedString]] = (0..<columnCount).map { column in
+                let cell = inlines(cells[safe: column] ?? [], style: style,
+                                   font: font, color: style.textColor)
+                return wrap(cell, width: widths[column])
+            }
+            let lineCount = cellLines.map(\.count).max() ?? 1
+            for line in 0..<lineCount {
+                if line > 0 { out.append(NSAttributedString(string: "\u{2028}")) }
+                for column in 0..<columnCount {
+                    if column > 0 { out.append(NSAttributedString(string: "\t")) }
+                    if let piece = cellLines[column][safe: line] { out.append(piece) }
+                }
             }
             out.append(NSAttributedString(string: "\n"))
             let range = NSRange(location: start, length: out.length - start)
@@ -621,6 +702,51 @@ public enum MarkdownAttributedBuilder {
                          range: NSRange(location: 0, length: out.length))
         out.addAttribute(tableAttribute, value: true, range: NSRange(location: 0, length: out.length))
         return out
+    }
+
+    /// Splits a rendered cell into lines no wider than `width`, breaking where
+    /// CoreText would. A cell that already fits comes back whole.
+    private static func wrap(_ cell: NSAttributedString, width: CGFloat) -> [NSAttributedString] {
+        guard cell.length > 0, cell.size().width > width + 0.5 else { return [cell] }
+        let typesetter = CTTypesetterCreateWithAttributedString(cell)
+        let whitespace = CharacterSet.whitespaces
+        var lines: [NSAttributedString] = []
+        var start = 0
+        while start < cell.length {
+            var count = CTTypesetterSuggestLineBreak(typesetter, start, Double(width))
+            if count <= 0 { count = cell.length - start }
+            var range = NSRange(location: start, length: count)
+            start += count
+            // Trailing spaces would push the next tab stop's text along.
+            let ns = cell.string as NSString
+            while range.length > 0,
+                  let scalar = Unicode.Scalar(ns.character(at: range.location + range.length - 1)),
+                  whitespace.contains(scalar) {
+                range.length -= 1
+            }
+            lines.append(cell.attributedSubstring(from: range))
+        }
+        return lines.isEmpty ? [cell] : lines
+    }
+
+    /// Width of the longest whitespace-separated run in `cell`: the narrowest the
+    /// cell can be wrapped to without breaking a word.
+    private static func longestWordWidth(_ cell: NSAttributedString) -> CGFloat {
+        let ns = cell.string as NSString
+        var widest: CGFloat = 0
+        ns.enumerateSubstrings(in: NSRange(location: 0, length: ns.length),
+                               options: .byWords) { _, range, enclosing, _ in
+            // The enclosing range carries attached punctuation such as "(subagent-",
+            // which wraps with its word; trailing spaces are dropped.
+            var word = enclosing
+            while word.length > 0,
+                  let scalar = Unicode.Scalar(ns.character(at: word.location + word.length - 1)),
+                  CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                word.length -= 1
+            }
+            widest = max(widest, cell.attributedSubstring(from: word.length > 0 ? word : range).size().width)
+        }
+        return widest.rounded(.up)
     }
 
     // MARK: - Inlines
@@ -695,21 +821,24 @@ public enum MarkdownAttributedBuilder {
                            font: mathFont(size: font.pointSize), color: color)
 
         case .code(let string):
-            // Hair spaces keep the fill off the glyphs, but they are whitespace: at a
-            // wrap they land at the end of the previous line or the start of the next,
-            // and TextKit paints a whitespace run's background out to the container
-            // edge. That left a grey bar on the line above a span that wrapped. So the
-            // spaces stay for the gap and the fill goes on the code alone.
+            // The box is drawn by the text view, inset from the glyphs by
+            // `inlineCodePadding`; the hair spaces either side reserve that room so it
+            // does not cover the neighbouring words. They are set in the prose font —
+            // in the mono face a hair space is a full character cell wide, which is
+            // what left a wide gap either side of every span — and kerned out to
+            // exactly the padding.
             let codeFont = PlatformFont.markdownMono(size: font.pointSize * 0.92)
-            let out = NSMutableAttributedString(string: "\u{200A}\(string)\u{200A}", attributes: [
+            let spacer = NSAttributedString(string: "\u{200A}", attributes: [
+                .font: font,
+                .kern: inlineCodePadding,
+            ])
+            let out = NSMutableAttributedString(attributedString: spacer)
+            out.append(NSAttributedString(string: string, attributes: [
                 .font: codeFont,
                 .foregroundColor: color,
-            ])
-            // Not `codeBackground`: a code block is a panel the eye is meant to land on,
-            // whereas an inline span sits mid-sentence and only needs to be set apart
-            // from the prose around it.
-            out.addAttribute(.backgroundColor, value: PlatformColor.markdownQuaternaryLabel,
-                             range: NSRange(location: 1, length: out.length - 2))
+                inlineCodeAttribute: true,
+            ]))
+            out.append(spacer)
             return out
 
         case .link(_, let destination) where style.citationChips && siteName(of: destination) != nil:
