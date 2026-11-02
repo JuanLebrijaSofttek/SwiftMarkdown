@@ -41,13 +41,10 @@ public struct MarkdownCodeBlockView: View {
     /// scroll view only grew the coloured box — the gap itself never moved.
     static let verticalInset: CGFloat = 10
 
-    /// Gap between the panel and the prose above and below it.
-    ///
-    /// Deliberately more than ``MarkdownAttributedBuilder/blockSpacing``, which this used
-    /// to take: that number spaces blocks that share the message's background, where a
-    /// couple of points is enough to read as a break. A panel has its own fill and border,
-    /// so at the same 2pt it looked wedged between the surrounding paragraphs.
-    static let outerSpacing: CGFloat = 8
+    /// Extra gap between the panel and the prose above and below it, on top of the
+    /// `MarkdownAttributedBuilder.blockSpacing` that `MarkdownView` already leaves
+    /// between segments. Zero now that gap is wide enough for a filled panel too.
+    static let outerSpacing: CGFloat = 0
 
     public init(language: String?, code: String) {
         self.language = language

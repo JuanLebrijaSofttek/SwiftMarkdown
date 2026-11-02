@@ -4,12 +4,10 @@
 //
 //  A table in its own horizontally scrolling view.
 //
-//  A tab-stop row is a single paragraph, so a table that does not fit cannot wrap
-//  gracefully: the row breaks mid-way and the cells below the break have no stop
-//  holding them in their column. Shrinking the type buys a little room and then runs
-//  out — a thirteen-column table wants roughly a thousand points and a phone has
-//  under four hundred. So the table leaves the shared text storage, is laid out at
-//  the width it actually wants, and scrolls.
+//  Long cells wrap onto extra lines within their row, and columns are sized to the
+//  width the view is offered, so most tables fit without scrolling. Some still do not:
+//  a thirteen-column table of unbreakable values wants far more room than a phone has.
+//  So the table leaves the shared text storage, and whatever cannot wrap scrolls.
 //
 //  The cost, and it is the same one code blocks pay: a drag selection stops at the
 //  table's edge rather than running through it.
@@ -21,8 +19,9 @@ public struct MarkdownTableView: View {
 
     public let table: MarkdownTable
 
-    /// The document's style. Its `contentWidth` is deliberately ignored — the table
-    /// is laid out unconstrained and the scroll view absorbs the overflow.
+    /// The document's style. Its `contentWidth` is replaced by the width this view is
+    /// actually offered, which long columns wrap to; the scroll view only absorbs what
+    /// still overflows once they have.
     public let style: MarkdownStyle
 
     /// Width the view is offered. A table narrower than this stretches to fill it, so
@@ -43,9 +42,9 @@ public struct MarkdownTableView: View {
         let naturalWidth: CGFloat
     }
 
-    private var unconstrainedStyle: MarkdownStyle {
+    private var fittedStyle: MarkdownStyle {
         var style = self.style
-        style.contentWidth = nil
+        style.contentWidth = availableWidth > 0 ? availableWidth : nil
         return style
     }
 
@@ -54,7 +53,7 @@ public struct MarkdownTableView: View {
             if let rendered {
                 MarkdownTextViewRepresentable(
                     attributed: rendered.attributed,
-                    style: unconstrainedStyle,
+                    style: fittedStyle,
                     // Enough for the border below the last row, plus the stroke itself.
                     verticalInset: MarkdownTableMetrics.verticalPadding
                         + MarkdownTableMetrics.borderWidth)
@@ -66,7 +65,6 @@ public struct MarkdownTableView: View {
         // for no reason reads as a bug.
         .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 4)
         .background(
             GeometryReader { proxy in
                 Color.clear.preference(key: MarkdownTableWidthKey.self,
@@ -79,11 +77,12 @@ public struct MarkdownTableView: View {
         }
         .onAppear { render() }
         .onChange(of: table) { _, _ in render() }
+        .onChange(of: availableWidth) { _, _ in render() }
         .onChange(of: MarkdownStyle.key(for: style)) { _, _ in render() }
     }
 
     private func render() {
-        let style = unconstrainedStyle
+        let style = fittedStyle
         let attributed = MarkdownAttributedBuilder.table(table, style: style)
         let trimmed = NSMutableAttributedString(attributedString: attributed)
         // The row terminator on the last row would otherwise lay out an empty line

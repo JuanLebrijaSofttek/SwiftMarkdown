@@ -31,7 +31,7 @@ public struct MarkdownCodeBlockViewHighlighted: View {
     @State private var lineHeight: CGFloat = 17
 
     static let verticalInset: CGFloat = 10
-    static let outerSpacing: CGFloat = 8
+    static let outerSpacing: CGFloat = 0
 
     public init(language: String?, code: String) {
         self.language = language
